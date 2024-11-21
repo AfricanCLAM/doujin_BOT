@@ -5,14 +5,22 @@ namespace App;
 use DOMDocument;
 use DOMXPath;
 
+require __DIR__ .'/helper_function.php';
+
 function handleCommand(string $userMessage, string $fullName): string
 {
     $replyMsg = "";
 
     // Check for "/code #code" using regex
-    if (preg_match('/^\/code\s+#?(\d+)/i', $userMessage, $matches)) {
+    if (preg_match('/^\/code\s+#(\d+)/i', $userMessage, $matches)) {
         $doujinId = $matches[1];
         return parseDoujinInfo($doujinId, 'predetermined');
+    }
+
+    // Check for "/tag #tag" using regex
+    if (preg_match('/^\/tag\s+#([a-zA-Z0-9\-]+)/i', $userMessage, $matches)) {
+        $tag = $matches[1];
+        return GetDoujinByTag(random(), $tag);
     }
 
     // Match basic commands
@@ -20,6 +28,7 @@ function handleCommand(string $userMessage, string $fullName): string
         case "/start":
             $replyMsg = "Konnichiwa, $fullName! 👋 Welcome to Doujinshi BOT! 
                 \n /code #code: Get doujinshi (nhentai) information
+                \n /tag #tag: Get Random Doujinshi with the Tag
                 \n /ping: Ping the bot
                 \n /random: get random doujinshi
                 \n /help: get help using the bot
@@ -35,7 +44,21 @@ function handleCommand(string $userMessage, string $fullName): string
             break;
 
         case "/help":
-            $replyMsg = "format for code is #[6 digit num]\n\n/code ##539702 ❌\n/code 539702 ⭕\n/code #539702 ⭕\n\nBe aware that not all 6 digit number work,it depend on whether the entry is present in the website.\n\nadditional note:\n-the /random command might take a long time\n-you must be logged in to download Doujinshi\n-You might want to use VPN or change your browser DNS/device DNS to acces the nhentai website";
+            $replyMsg = "1.format for code is #[6 digit num]
+            \n\n/code ##539702 ❌
+            \n/code 539702 ❌
+            \n/code #539702 ⭕
+            \n\nBe aware that not all 6 digit number work,it depend on whether the entry is present in the website.
+            \n\n2.format for tag is #[text],all lowercase and word is separated by '-'
+            \n\n/tag ##dark-skin ❌
+            \n/tag #darkskin ❌
+            \n/tag #DarkSkin ❌
+            \n/tag #dark-skin ⭕
+            \n\nBe aware that not all tag you inputted is available on the website.
+            \n\nadditional note:
+            \n-the /tag command might take a long time
+            \n-you must be logged in to download Doujinshi
+            \n-You might want to use VPN or change your browser DNS/device DNS to acces the nhentai website";
             break;
 
         case "/list":
@@ -57,27 +80,14 @@ function handleCommand(string $userMessage, string $fullName): string
 function parseDoujinInfo(string $doujinId, string $state = "predetermined"): string
 {
     $url = "https://nhentai.net/g/$doujinId/";
-    $download_url = "https://nhentai.net/g/$doujinId/download";
+    $download_url = $url . "download";
 
     try {
         $html = fetchHTML($url);
         // Check for 404 – Not Found
         if ($state === "randomized") {
-            
-            //Parse the HTML
-            $dom = new DOMDocument();
-            @$dom->loadHTML($html);
-        
-            $xpath = new DOMXPath($dom);
-        
-            // Helper to fetch text content or return empty string
-            $getNodeContent = function ($query) use ($xpath) {
-                $node = $xpath->query($query)->item(0);
-                return $node ? trim($node->textContent) : '';
-            };
 
-            //check whether there's container error
-            $notFound = $getNodeContent("//div[@class='container error']");
+            $notFound = getNotFound($html);
 
             if (!empty($notFound)) {
                 // Generate a new random code and retry
@@ -111,6 +121,60 @@ function parseDoujinInfo(string $doujinId, string $state = "predetermined"): str
     }
 }
 
+function GetDoujinByTag(string $doujinId, string $tag, int $ratelimit = 0)
+{
+    // Define the rate limit
+    $maxRateLimit = 30;
+
+    $url = "https://nhentai.net/g/$doujinId/";
+    $download_url = $url . "download";
+
+    $html = fetchHTML($url);
+
+    // Check for 404 – Not Found
+    $notFound = getNotFound($html);
+
+    // If ratelimit hasn't been reached yet
+    if ($ratelimit < $maxRateLimit) {
+        if (!empty($notFound)) {
+            // Generate a new random code and retry
+            return getDoujinByTag(random(), $tag, $ratelimit);
+        } else {
+            // Validate the tag
+            $hasTag = validateTag($tag, $html);
+
+            if ($hasTag === false) {
+                // Increment the ratelimit on failed tag validation
+                $ratelimit++;
+                return getDoujinByTag(random(), $tag, $ratelimit);
+            }
+        }
+    } else {
+        // Return a message when the rate limit is reached
+        return "Rate limit of $maxRateLimit hit reached. Please try again later and make sure that the tag you provide is formatted correctly and is available on the website,use /help for guide on correct format.";
+    }
+
+    if (!$html) {
+        return "Failed to fetch data. Either the input code is invalid or there's a connection problem.";
+    }
+
+    // Extract content using a helper function
+    $extractedData = extractDoujinContent($html);
+
+    // Format the response, omitting empty fields
+    $response = [];
+    foreach ($extractedData as $key => $value) {
+        if (!empty($value)) {
+            $response[] = "<b>" . ucfirst($key) . ":</b> $value";
+        }
+    }
+
+    // Append the page link
+    $response[] = "\n<b><a href=\"$url\">PAGE LINK</a></b>\n<b><a href=\"$download_url\">DOWNLOAD LINK</a></b>";
+
+    return implode("\n", $response);
+}
+
 function extractDoujinContent(string $html): array
 {
     $dom = new DOMDocument();
@@ -136,7 +200,7 @@ function extractDoujinContent(string $html): array
     // Extracting fields
     $title = $getNodeContent("//h1[@class='title']");
     $code = $getNodeContent("//h3[@id='gallery_id']/span[@class='hash']/following-sibling::text()");
-    $tagsContent = $getNodeContent("//meta[@name='twitter:description']/@content");
+    $tagsContent = implode(', ', $getNodesContent("//a[contains(@href, '/tag/')]/span[@class='name']"));
     $artistString = implode(', ', $getNodesContent("//a[contains(@href, '/artist/')]/span[@class='name']"));
     $parodyString = implode(', ', $getNodesContent("//a[contains(@href, '/parody/')]/span[@class='name']"));
     $characterString = implode(', ', $getNodesContent("//a[contains(@href, '/character/')]/span[@class='name']"));
@@ -162,29 +226,3 @@ function extractDoujinContent(string $html): array
     ];
 }
 
-function fetchHTML(string $url): ?string
-{
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-    curl_setopt($ch, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36");
-
-    $html = curl_exec($ch);
-
-    if (curl_errno($ch)) {
-        // Log cURL error
-        file_put_contents(__DIR__ . '/log/curl_error.log', curl_error($ch) . "\n", FILE_APPEND);
-        curl_close($ch);
-        return null;
-    }
-
-    curl_close($ch);
-    return $html;
-}
-
-function random()
-{
-    return substr(str_shuffle("1234567890"), 0, 6);
-}
