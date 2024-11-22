@@ -9,7 +9,7 @@ class TelegramBot
 
     public function __construct()
     {
-        $this->botToken = $_ENV['BOT_TOKEN'];
+        $this->botToken = getenv('BOT_TOKEN') ?: $_ENV['BOT_TOKEN'];
         $this->apiUrl = "https://api.telegram.org/bot{$this->botToken}/";
     }
 
